@@ -2,13 +2,42 @@
 
 import { useState, useEffect } from "react"
 import { useParams } from "react-router-dom"
-import { CheckCircle, Upload, FileText, User, Mail, Phone, Briefcase, AlertCircle } from "lucide-react"
+import {
+  CheckCircle, Upload, FileText, User, Mail, Phone, Briefcase, AlertCircle,
+} from "lucide-react"
 import "./Onboarding.css"
 
-const API_BASE_URL = "https://zorvixelocalbackend.onrender.com"
+const API_BASE_URL = "http://localhost:5000"
+
+function normalizeCandidate(raw) {
+  if (!raw) return null
+  // allow both camelCase and snake_case from backend
+  const c = raw.candidate || raw
+  const upload = c.uploadDetails || c.upload_details || null
+  const status = (c.status || c.link_status || "").toLowerCase()
+
+  return {
+    name: c.name || "",
+    email: c.email || "",
+    phone: c.phone || "",
+    position: c.position || "",
+    candidate_id: c.candidate_id || c.candidateId || "",
+    hasUploaded: Boolean(c.hasUploaded ?? c.has_uploaded ?? false),
+    status, // "active" | "inactive" | "expired" (optional)
+    uploadDetails: upload && {
+      file_name: upload.file_name || upload.fileName || "",
+      file_size: Number(upload.file_size ?? upload.fileSize ?? 0),
+      upload_date: upload.upload_date || upload.uploadedAt || upload.uploadDate || null,
+      url: upload.url || upload.file_url || null,
+    },
+    // Optional: server can include nicer error message too
+    message: raw.message || "",
+  }
+}
 
 export default function Onboarding() {
   const { token } = useParams()
+
   const [candidate, setCandidate] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
@@ -20,58 +49,64 @@ export default function Onboarding() {
   const currentYear = new Date().getFullYear()
 
   useEffect(() => {
-    if (token) {
-      fetchCandidateDetails()
-    }
+    if (token) fetchCandidateDetails()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
-  const fetchCandidateDetails = async () => {
+  async function fetchCandidateDetails() {
     setLoading(true)
     setError("")
-
     try {
-      const response = await fetch(`${API_BASE_URL}/api/candidate-details/${token}`)
-      const data = await response.json()
+      const res = await fetch(`${API_BASE_URL}/api/candidate-details/${token}`)
+      const data = await res.json()
 
-      if (data.success) {
-        setCandidate(data.candidate)
-      } else {
-        // Show more specific error messages
-        if (data.message.includes("expired")) {
+      if (res.ok && data.success) {
+        const norm = normalizeCandidate(data)
+        setCandidate(norm)
+
+        // if backend flagged link state, show contextual message
+        if (norm?.status === "expired") {
           setError("This onboarding link has expired. Please contact HR for a new link.")
-        } else if (data.message.includes("inactive")) {
+        } else if (norm?.status === "inactive") {
+          setError("This onboarding link has been deactivated. Please contact HR for assistance.")
+        }
+      } else {
+        const msg = (data?.message || "").toLowerCase()
+        if (msg.includes("expired")) {
+          setError("This onboarding link has expired. Please contact HR for a new link.")
+        } else if (msg.includes("inactive")) {
           setError("This onboarding link has been deactivated. Please contact HR for assistance.")
         } else {
-          setError(data.message || "Failed to load candidate details")
+          setError(data?.message || "Failed to load candidate details")
         }
+        setCandidate(null)
       }
     } catch (err) {
       setError("Error loading candidate details: " + err.message)
+      setCandidate(null)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleFileSelect = (event) => {
-    const file = event.target.files[0]
-    if (file) {
-      if (file.type !== "application/pdf") {
-        setError("Please select a PDF file only")
-        return
-      }
+  function handleFileSelect(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
 
-      if (file.size > 50 * 1024 * 1024) {
-        // 50MB limit
-        setError("File size must be less than 50MB")
-        return
-      }
-
-      setSelectedFile(file)
-      setError("")
+    if (file.type !== "application/pdf") {
+      setError("Please select a PDF file only")
+      return
     }
+    if (file.size > 50 * 1024 * 1024) {
+      setError("File size must be less than 50MB")
+      return
+    }
+
+    setSelectedFile(file)
+    setError("")
   }
 
-  const handleUpload = async () => {
+  function handleUpload() {
     if (!selectedFile) {
       setError("Please select a file to upload")
       return
@@ -85,59 +120,57 @@ export default function Onboarding() {
     const formData = new FormData()
     formData.append("certificate", selectedFile)
 
-    try {
-      const xhr = new XMLHttpRequest()
+    const xhr = new XMLHttpRequest()
 
-      xhr.upload.addEventListener("progress", (e) => {
-        if (e.lengthComputable) {
-          const percentComplete = (e.loaded / e.total) * 100
-          setUploadProgress(percentComplete)
-        }
-      })
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) {
+        setUploadProgress((e.loaded / e.total) * 100)
+      }
+    })
 
-      xhr.addEventListener("load", () => {
-        if (xhr.status === 201) {
-          const data = JSON.parse(xhr.responseText)
+    xhr.addEventListener("load", () => {
+      try {
+        const json = JSON.parse(xhr.responseText || "{}")
+        if (xhr.status === 201 || (xhr.status >= 200 && xhr.status < 300 && json.success)) {
           setSuccess("Certificate uploaded successfully!")
           setSelectedFile(null)
-          fetchCandidateDetails() // Refresh candidate details
+          fetchCandidateDetails()
         } else {
-          const errorData = JSON.parse(xhr.responseText)
-          setError(errorData.message || "Upload failed")
+          setError(json.message || "Upload failed")
         }
+      } catch {
+        setError("Upload failed")
+      } finally {
         setUploading(false)
         setUploadProgress(0)
-      })
+      }
+    })
 
-      xhr.addEventListener("error", () => {
-        setError("Upload failed. Please try again.")
-        setUploading(false)
-        setUploadProgress(0)
-      })
-
-      xhr.open("POST", `${API_BASE_URL}/api/candidate/upload/${token}`)
-      xhr.send(formData)
-    } catch (err) {
-      setError("Error uploading file: " + err.message)
+    xhr.addEventListener("error", () => {
+      setError("Upload failed. Please try again.")
       setUploading(false)
       setUploadProgress(0)
-    }
+    })
+
+    xhr.open("POST", `${API_BASE_URL}/api/candidate/upload/${token}`)
+    xhr.send(formData)
   }
 
-  const formatFileSize = (bytes) => {
-    if (bytes === 0) return "0 Bytes"
+  function formatFileSize(bytes) {
+    if (!bytes) return "0 Bytes"
     const k = 1024
     const sizes = ["Bytes", "KB", "MB", "GB"]
     const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+    return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
   }
 
+  // ---------------- UI STATES ----------------
   if (loading) {
     return (
       <div className="onboarding-container-onb">
         <div className="loading-card-onb">
           <div className="loading-content-onb">
-            <div className="loading-spinner-onb"></div>
+            <div className="loading-spinner-onb" />
             <p>Loading candidate details...</p>
           </div>
         </div>
@@ -145,23 +178,31 @@ export default function Onboarding() {
     )
   }
 
-  if (error && !candidate) {
+  if (!candidate) {
     return (
       <div className="onboarding-container-onb">
         <div className="error-card-onb">
           <div className="alert-error-onb">
             <AlertCircle className="alert-icon-onb" />
-            <div className="alert-description-onb">{error}</div>
+            <div className="alert-description-onb">
+              {error || "Onboarding link is invalid or has expired."}
+            </div>
           </div>
         </div>
       </div>
     )
   }
 
+  const linkBlocked = candidate.status === "expired" || candidate.status === "inactive"
+
   return (
     <div className="onboarding-page-onb">
-       <div className="header">
-        <img src="/miniassets/img/zorvixe_logo_main.png" alt="Zorvixe Logo" className="logo_payment" />
+      <div className="header">
+        <img
+          src="/miniassets/img/zorvixe_logo_main.png"
+          alt="Zorvixe Logo"
+          className="logo_payment"
+        />
       </div>
 
       <div className="onboarding-content-onb">
@@ -186,7 +227,7 @@ export default function Onboarding() {
           </div>
         )}
 
-        {candidate && !candidate.hasUploaded && (
+        {!linkBlocked && !candidate.hasUploaded && (
           <div className="alert-warning-onb">
             <AlertCircle className="alert-icon-onb" />
             <div className="alert-description-onb">
@@ -197,7 +238,7 @@ export default function Onboarding() {
         )}
 
         <div className="cards-grid-onb">
-          {/* Candidate Information Card */}
+          {/* Candidate Information */}
           <div className="card-onb">
             <div className="card-header-onb">
               <div className="card-title-onb">
@@ -210,7 +251,7 @@ export default function Onboarding() {
               <div className="info-item-onb">
                 <User className="info-icon-onb" />
                 <div className="info-details-onb">
-                  <p className="info-value-onb">{candidate?.name}</p>
+                  <p className="info-value-onb">{candidate.name}</p>
                   <p className="info-label-onb">Full Name</p>
                 </div>
               </div>
@@ -218,7 +259,7 @@ export default function Onboarding() {
               <div className="info-item-onb">
                 <Mail className="info-icon-onb" />
                 <div className="info-details-onb">
-                  <p className="info-value-onb">{candidate?.email}</p>
+                  <p className="info-value-onb">{candidate.email}</p>
                   <p className="info-label-onb">Email Address</p>
                 </div>
               </div>
@@ -226,7 +267,7 @@ export default function Onboarding() {
               <div className="info-item-onb">
                 <Phone className="info-icon-onb" />
                 <div className="info-details-onb">
-                  <p className="info-value-onb">{candidate?.phone}</p>
+                  <p className="info-value-onb">{candidate.phone}</p>
                   <p className="info-label-onb">Phone Number</p>
                 </div>
               </div>
@@ -234,7 +275,7 @@ export default function Onboarding() {
               <div className="info-item-onb">
                 <Briefcase className="info-icon-onb" />
                 <div className="info-details-onb">
-                  <p className="info-value-onb">{candidate?.position}</p>
+                  <p className="info-value-onb">{candidate.position}</p>
                   <p className="info-label-onb">Position</p>
                 </div>
               </div>
@@ -242,23 +283,26 @@ export default function Onboarding() {
               <div className="candidate-id-section-onb">
                 <div className="candidate-id-row-onb">
                   <span className="candidate-id-label-onb">Candidate ID:</span>
-                  <span className="candidate-id-badge-onb">{candidate?.candidate_id}</span>
+                  <span className="candidate-id-badge-onb">{candidate.candidate_id}</span>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Document Upload Card */}
+          {/* Document Upload */}
           <div className="card-onb">
             <div className="card-header-onb">
               <div className="card-title-onb">
                 <FileText className="card-icon-onb" />
                 Document Upload
               </div>
-              <div className="card-description-onb">Upload your certificates and documents as a single PDF file</div>
+              <div className="card-description-onb">
+                Upload your certificates and documents as a single PDF file
+              </div>
             </div>
+
             <div className="card-content-onb">
-              {candidate?.hasUploaded ? (
+              {candidate.hasUploaded ? (
                 <div className="upload-success-onb">
                   <CheckCircle className="success-icon-onb" />
                   <h3 className="success-title-onb">Documents Already Uploaded!</h3>
@@ -272,13 +316,30 @@ export default function Onboarding() {
                         <strong>File:</strong> {candidate.uploadDetails.file_name}
                       </p>
                       <p className="upload-detail-onb">
-                        <strong>Uploaded:</strong> {new Date(candidate.uploadDetails.upload_date).toLocaleDateString()}
+                        <strong>Uploaded:</strong>{" "}
+                        {candidate.uploadDetails.upload_date
+                          ? new Date(candidate.uploadDetails.upload_date).toLocaleString()
+                          : "—"}
                       </p>
                       <p className="upload-detail-onb">
                         <strong>Size:</strong> {formatFileSize(candidate.uploadDetails.file_size)}
                       </p>
+                      {candidate.uploadDetails.url && (
+                        <p className="upload-detail-onb">
+                          <a href={candidate.uploadDetails.url} target="_blank" rel="noreferrer">
+                            View uploaded file
+                          </a>
+                        </p>
+                      )}
                     </div>
                   )}
+                </div>
+              ) : linkBlocked ? (
+                <div className="alert-error-onb">
+                  <AlertCircle className="alert-icon-onb" />
+                  <div className="alert-description-onb">
+                    Uploads are disabled because this link is {candidate.status}.
+                  </div>
                 </div>
               ) : (
                 <div className="upload-section-onb">
@@ -286,7 +347,9 @@ export default function Onboarding() {
                     <Upload className="upload-icon-onb" />
                     <div className="upload-text-onb">
                       <p className="upload-title-onb">Upload Your Certificates</p>
-                      <p className="upload-subtitle-onb">Please combine all your certificates into a single PDF file</p>
+                      <p className="upload-subtitle-onb">
+                        Please combine all your certificates into a single PDF file
+                      </p>
                       <p className="upload-note-onb">Maximum file size: 50MB | Format: PDF only</p>
                     </div>
 
@@ -325,15 +388,19 @@ export default function Onboarding() {
                         <span>{Math.round(uploadProgress)}%</span>
                       </div>
                       <div className="progress-bar-onb">
-                        <div className="progress-fill-onb" style={{ width: `${uploadProgress}%` }}></div>
+                        <div className="progress-fill-onb" style={{ width: `${uploadProgress}%` }} />
                       </div>
                     </div>
                   )}
 
-                  <button onClick={handleUpload} disabled={!selectedFile || uploading} className="upload-btn-onb">
+                  <button
+                    onClick={handleUpload}
+                    disabled={!selectedFile || uploading}
+                    className="upload-btn-onb"
+                  >
                     {uploading ? (
                       <>
-                        <div className="btn-spinner-onb"></div>
+                        <div className="btn-spinner-onb" />
                         Uploading...
                       </>
                     ) : (
@@ -345,7 +412,9 @@ export default function Onboarding() {
                   </button>
 
                   <div className="upload-disclaimer-onb">
-                    <p>By uploading, you confirm that all documents are authentic and complete.</p>
+                    <p>
+                      By uploading, you confirm that all documents are authentic and complete.
+                    </p>
                   </div>
                 </div>
               )}
@@ -353,7 +422,7 @@ export default function Onboarding() {
           </div>
         </div>
 
-        {/* Instructions Card */}
+        {/* Instructions */}
         <div className="card-onb instructions-card-onb">
           <div className="card-header-onb">
             <div className="card-title-onb">Upload Instructions</div>
@@ -369,7 +438,7 @@ export default function Onboarding() {
                   <li>• Identity proof</li>
                   <li>• Address proof</li>
                   <li>• Signed Offer Letter</li>
-                  <li>• Government-issued ID proof (Aadhar/Passport/PAN) </li>
+                  <li>• Government-issued ID proof (Aadhar/Passport/PAN)</li>
                   <li>• Recent passport-sized photograph</li>
                   <li>• Any other relevant documents</li>
                   <li>• Bank account details for stipend processing</li>
@@ -382,7 +451,7 @@ export default function Onboarding() {
                   <li>• Ensure documents are clear and readable</li>
                   <li>• Maximum file size: 50MB</li>
                   <li>• Only PDF format is accepted</li>
-                  <li>• Upload once - modifications require admin assistance</li>
+                  <li>• Upload once — modifications require admin assistance</li>
                 </ul>
               </div>
             </div>
