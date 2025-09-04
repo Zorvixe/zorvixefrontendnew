@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Modal, Button } from 'react-bootstrap';
 
+const API_BASE_URL = process.env.API_BACKEND_URL || "http://localhost:5000"
+
+
 const Contact = () => {
   // Form state
   const [formData, setFormData] = useState({
@@ -130,7 +133,7 @@ const Contact = () => {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch('https://zorvixebackend.onrender.com/api/contact/submit', {
+      const response = await fetch(`${API_BASE_URL}/api/contact/submit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
