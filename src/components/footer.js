@@ -78,7 +78,7 @@ const Footer = () => {
       <div className="container copyright text-center mt-4">
         <p>
           <span>Copyright &copy; {currentYear}</span>
-          <strong className="px-1 sitename">ZORVIXE</strong>
+          <strong className="px-1 sitename">ZORVIXE TECHNNOLOGIES</strong>
           <span>All Rights Reserved</span>
         </p>
       </div>
